@@ -44,6 +44,17 @@ val macOSNotaryKeychainProfile = System.getenv("TERMORA_MAC_NOTARY_KEYCHAIN_PROF
 val macOSNotary = macOSSign && macOSNotaryKeychainProfile.isNotBlank()
         && System.getenv("TERMORA_MAC_NOTARY").toBoolean()
 
+fun exec(action: ExecSpec.() -> Unit) {
+    providers.exec(action).result.get().assertNormalExitValue()
+}
+
+fun execIgnoreExitValue(action: ExecSpec.() -> Unit) {
+    providers.exec {
+        isIgnoreExitValue = true
+        action()
+    }.result.get()
+}
+
 allprojects {
     repositories {
         mavenCentral()
@@ -135,6 +146,11 @@ application {
         args.add("-Dapple.awt.application.appearance=system")
     }
 
+    if (os.isLinux) {
+        // https://blog.jetbrains.com/platform/2026/02/wayland-by-default-in-2026-1-eap/
+        args.add("-Dawt.toolkit.name=XToolkit")
+    }
+
     args.add("-DTERMORA_PLUGIN_DIRECTORY=${layout.buildDirectory.get().asFile.absolutePath}${File.separator}plugins")
 
     applicationDefaultJvmArgs = args
@@ -211,15 +227,15 @@ tasks.register<Copy>("copy-dependencies") {
                 FileUtils.forceMkdir(targetDir)
                 if (os.isWindows) {
                     // @formatter:off
-                    exec { commandLine("unzip","-j","-o", file.absolutePath, "com/sun/jna/win32-${arch.name}/*", "-d", targetDir.absolutePath) }
+                    execIgnoreExitValue { commandLine("unzip","-j","-o", file.absolutePath, "com/sun/jna/win32-${arch.name}/*", "-d", targetDir.absolutePath) }
                     // @formatter:on
                 } else if (os.isLinux) {
                     // @formatter:off
-                    exec { commandLine("unzip","-j","-o", file.absolutePath, "com/sun/jna/linux-${arch.name}/*", "-d", targetDir.absolutePath) }
+                    execIgnoreExitValue { commandLine("unzip","-j","-o", file.absolutePath, "com/sun/jna/linux-${arch.name}/*", "-d", targetDir.absolutePath) }
                     // @formatter:on
                 } else if (os.isMacOsX) {
                     // @formatter:off
-                    exec { commandLine("unzip","-j","-o", file.absolutePath, "com/sun/jna/darwin-${arch.name}/*", "-d", targetDir.absolutePath) }
+                    execIgnoreExitValue { commandLine("unzip","-j","-o", file.absolutePath, "com/sun/jna/darwin-${arch.name}/*", "-d", targetDir.absolutePath) }
                     // @formatter:on
                 }
 
@@ -232,14 +248,14 @@ tasks.register<Copy>("copy-dependencies") {
                 exec { commandLine("zip", "-d", file.absolutePath, "com/sun/jna/dragonflybsd-*") }
                 exec { commandLine("zip", "-d", file.absolutePath, "com/sun/jna/aix-*") }
             } else if ("${pty4j.name}-${pty4j.version}" == file.nameWithoutExtension) {
-                val osName = if (os.isWindows) "win32" else if (os.isMacOsX) "darwin" else "linux"
+                val osName = if (os.isWindows) "win" else if (os.isMacOsX) "darwin" else "linux"
                 val myArchName = if (arch.isArm) "aarch64" else "x86-64"
                 val targetDir = if (os.isMacOsX) FileUtils.getFile(dylib, pty4j.name, osName)
                 else FileUtils.getFile(dylib, pty4j.name, osName, myArchName)
                 FileUtils.forceMkdir(targetDir)
                 if (os.isWindows) {
                     // @formatter:off
-                    exec { commandLine("unzip", "-j" , "-o", file.absolutePath, "resources/*win/${myArchName}/*", "-d", targetDir.absolutePath) }
+                    exec { commandLine("unzip", "-j" , "-o", file.absolutePath, "resources/com/pty4j/native/win/${myArchName}/*", "-d", targetDir.absolutePath) }
                     // @formatter:on
                 } else if (os.isLinux) {
                     // @formatter:off
@@ -299,15 +315,15 @@ tasks.register<Copy>("copy-dependencies") {
                 val isArm = arch.isArm
                 if (os.isWindows) {
                     // @formatter:off
-                    exec { commandLine("unzip", "-j" , "-o", file.absolutePath, "com/formdev/flatlaf/natives/*windows*${if (isArm) "arm64" else "x86_64"}*", "-d", targetDir.absolutePath) }
+                    execIgnoreExitValue { commandLine("unzip", "-j" , "-o", file.absolutePath, "com/formdev/flatlaf/natives/*windows*${if (isArm) "arm64" else "x86_64"}*", "-d", targetDir.absolutePath) }
                     // @formatter:on
                 } else if (os.isLinux) {
                     // @formatter:off
-                    exec { commandLine("unzip", "-j" , "-o", file.absolutePath, "com/formdev/flatlaf/natives/*linux*${if (isArm) "arm64" else "x86_64"}*", "-d", targetDir.absolutePath) }
+                    execIgnoreExitValue { commandLine("unzip", "-j" , "-o", file.absolutePath, "com/formdev/flatlaf/natives/*linux*${if (isArm) "arm64" else "x86_64"}*", "-d", targetDir.absolutePath) }
                     // @formatter:on
                 } else if (os.isMacOsX) {
                     // @formatter:off
-                    exec { commandLine("unzip", "-j" , "-o", file.absolutePath, "com/formdev/flatlaf/natives/*macos*${if (isArm) "arm" else "x86"}*", "-d", targetDir.absolutePath) }
+                    execIgnoreExitValue { commandLine("unzip", "-j" , "-o", file.absolutePath, "com/formdev/flatlaf/natives/*macos*${if (isArm) "arm" else "x86"}*", "-d", targetDir.absolutePath) }
                     // @formatter:on
                 }
                 exec { commandLine("zip", "-d", file.absolutePath, "com/formdev/flatlaf/natives/*") }
@@ -339,6 +355,7 @@ tasks.register<Exec>("jlink") {
         "java.security.jgss",
         "jdk.crypto.ec",
         "jdk.unsupported",
+        "jdk.httpserver",
     )
 
     commandLine(
@@ -576,9 +593,8 @@ fun packOnMac(distributionDir: Directory, finalFilenameWithoutExtension: String,
     signMacOSLocalFile(dmgFile)
 
     // 找到 .app
-    val imageFile = layout.buildDirectory.dir("jpackage/images/").get().asFile
-    val appFile = imageFile.listFiles()?.firstOrNull()?.listFiles()?.firstOrNull()
-        ?: throw FileNotFoundException("${projectName}.app")
+    val imageFile = layout.buildDirectory.dir("jpackage/image/").get().asFile
+    val appFile = imageFile.listFiles()?.firstOrNull() ?: throw FileNotFoundException("${projectName}.app")
 
     // zip
     // @formatter:off
@@ -767,7 +783,7 @@ fun stapleMacOSLocalFile(file: File) {
 
 kotlin {
     jvmToolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
     }
 }
 

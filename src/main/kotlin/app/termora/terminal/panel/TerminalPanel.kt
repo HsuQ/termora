@@ -251,7 +251,7 @@ class TerminalPanel(val tab: TerminalTab?, val terminal: Terminal, private val w
     private fun enableDropTarget() {
         dropTarget = object : DropTarget() {
             override fun drop(e: DropTargetDropEvent) {
-                if (!dropFiles) {
+                if (dropFiles.not()) {
                     return
                 }
 
@@ -763,6 +763,13 @@ class TerminalPanel(val tab: TerminalTab?, val terminal: Terminal, private val w
                 addVisualWindow(
                     TransferVisualWindow(
                         dataProvider.getData(DataProviders.TerminalTab) as SSHTerminalTab,
+                        this
+                    )
+                )
+            } else if (name == "CommandHistory") {
+                addVisualWindow(
+                    CommandHistoryVisualWindow(
+                        dataProvider.getData(DataProviders.TerminalTab) as HostTerminalTab,
                         this
                     )
                 )

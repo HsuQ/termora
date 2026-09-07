@@ -2,8 +2,10 @@ package app.termora.keymgr
 
 import app.termora.*
 import app.termora.account.AccountOwner
+import app.termora.account.TeamRole
 import app.termora.actions.AnAction
 import app.termora.actions.AnActionEvent
+import app.termora.database.OwnerType
 import app.termora.plugin.internal.ssh.SSHProtocolProvider
 import app.termora.tree.Filter
 import app.termora.tree.HostTreeNode
@@ -56,6 +58,7 @@ class KeyManagerPanel(private val accountOwner: AccountOwner) : JPanel(BorderLay
     init {
         initView()
         initEvents()
+        preventImportantData()
     }
 
 
@@ -89,15 +92,19 @@ class KeyManagerPanel(private val accountOwner: AccountOwner) : JPanel(BorderLay
         add(JScrollPane(keyPairTable).apply {
             border = BorderFactory.createMatteBorder(1, 1, 1, 1, DynamicColor.BorderColor)
         }, BorderLayout.CENTER)
-        add(
-            FormBuilder.create().layout(layout).padding(EmptyBorder(0, 12, 0, 0))
-                .add(generateBtn).xy(1, rows).apply { rows += step }
-                .add(editBtn).xy(1, rows).apply { rows += step }
-                .add(importBtn).xy(1, rows).apply { rows += step }
-                .add(exportBtn).xy(1, rows).apply { rows += step }
-                .add(deleteBtn).xy(1, rows).apply { rows += step }
-                .add(sshCopyIdBtn).xy(1, rows).apply { rows += step }
-                .build(), BorderLayout.EAST)
+
+        if (accountOwner.type == OwnerType.User || (accountOwner.type == OwnerType.Team && accountOwner.role != TeamRole.Visitor.name)) {
+            add(
+                FormBuilder.create().layout(layout).padding(EmptyBorder(0, 12, 0, 0))
+                    .add(generateBtn).xy(1, rows).apply { rows += step }
+                    .add(editBtn).xy(1, rows).apply { rows += step }
+                    .add(importBtn).xy(1, rows).apply { rows += step }
+                    .add(exportBtn).xy(1, rows).apply { rows += step }
+                    .add(deleteBtn).xy(1, rows).apply { rows += step }
+                    .add(sshCopyIdBtn).xy(1, rows).apply { rows += step }
+                    .build(), BorderLayout.EAST)
+        }
+
         border = BorderFactory.createEmptyBorder(12, 12, 12, 12)
 
     }
@@ -199,6 +206,17 @@ class KeyManagerPanel(private val accountOwner: AccountOwner) : JPanel(BorderLay
         }
     }
 
+    private fun preventImportantData() {
+        if (accountOwner.isVisitorMode()) {
+            generateBtn.isVisible = false
+            editBtn.isVisible = false
+            deleteBtn.isVisible = false
+            importBtn.isVisible = false
+            exportBtn.isVisible = false
+            sshCopyIdBtn.isVisible = false
+        }
+    }
+
     private fun sshCopyId(evt: AnActionEvent) {
         val keyPairs = keyPairTable.selectedRows.map { keyPairTableModel.getOhKeyPair(it) }
         val publicKeys = mutableListOf<Pair<String, String>>()
@@ -287,6 +305,9 @@ class KeyManagerPanel(private val accountOwner: AccountOwner) : JPanel(BorderLay
 
             typeComboBox.addItem("RSA")
             typeComboBox.addItem("ED25519")
+            typeComboBox.addItem("ECDSA-SHA2-NISTP256")
+            typeComboBox.addItem("ECDSA-SHA2-NISTP384")
+            typeComboBox.addItem("ECDSA-SHA2-NISTP521")
 
             // 默认 RSA
             lengthComboBox.addItem(1024)
@@ -396,6 +417,12 @@ class KeyManagerPanel(private val accountOwner: AccountOwner) : JPanel(BorderLay
                         lengthComboBox.addItem(1024 * 4)
                         lengthComboBox.addItem(1024 * 8)
                         lengthComboBox.selectedItem = 1024 * 2
+                    } else if (typeComboBox.selectedItem == "ECDSA-SHA2-NISTP256") {
+                        lengthComboBox.addItem(256)
+                    } else if (typeComboBox.selectedItem == "ECDSA-SHA2-NISTP384") {
+                        lengthComboBox.addItem(384)
+                    } else if (typeComboBox.selectedItem == "ECDSA-SHA2-NISTP521") {
+                        lengthComboBox.addItem(521)
                     }
                 }
             }
@@ -413,6 +440,17 @@ class KeyManagerPanel(private val accountOwner: AccountOwner) : JPanel(BorderLay
             super.doCancelAction()
         }
 
+        private fun genKeyPair(): KeyPair {
+            val keyType = when (typeComboBox.selectedItem) {
+                "ED25519" -> KeyPairProvider.SSH_ED25519
+                "ECDSA-SHA2-NISTP256" -> KeyPairProvider.ECDSA_SHA2_NISTP256
+                "ECDSA-SHA2-NISTP384" -> KeyPairProvider.ECDSA_SHA2_NISTP384
+                "ECDSA-SHA2-NISTP521" -> KeyPairProvider.ECDSA_SHA2_NISTP521
+                else -> KeyPairProvider.SSH_RSA
+            }
+            return KeyUtils.generateKeyPair(keyType, lengthComboBox.selectedItem as Int)
+        }
+
         override fun doOKAction() {
 
             if (ohKeyPair == OhKeyPair.empty) {
@@ -422,9 +460,7 @@ class KeyManagerPanel(private val accountOwner: AccountOwner) : JPanel(BorderLay
                     return
                 }
 
-                val keyType = if (typeComboBox.selectedItem == "RSA")
-                    KeyPairProvider.SSH_RSA else KeyPairProvider.SSH_ED25519
-                val keyPair = KeyUtils.generateKeyPair(keyType, lengthComboBox.selectedItem as Int)
+                val keyPair = genKeyPair()
                 ohKeyPair = OhKeyPair(
                     id = randomUUID(),
                     name = nameTextField.text,
@@ -596,17 +632,30 @@ class KeyManagerPanel(private val accountOwner: AccountOwner) : JPanel(BorderLay
                 val keyPair = provider.loadKeys(null).firstOrNull()
                     ?: throw IllegalStateException("Failed to load the key file")
                 val keyType = KeyUtils.getKeyType(keyPair)
-                if (keyType != KeyPairProvider.SSH_RSA && keyType != KeyPairProvider.SSH_ED25519) {
-                    throw UnsupportedOperationException("Key type:${keyType}. Only RSA/ED25519 keys are supported.")
+                if (keyType != KeyPairProvider.SSH_RSA
+                    && keyType != KeyPairProvider.SSH_ED25519
+                    && keyType != KeyPairProvider.ECDSA_SHA2_NISTP256
+                    && keyType != KeyPairProvider.ECDSA_SHA2_NISTP384
+                    && keyType != KeyPairProvider.ECDSA_SHA2_NISTP521
+                ) {
+                    throw UnsupportedOperationException("Key type:${keyType}. Only RSA/ED25519/ECDSA keys are supported.")
                 }
 
                 nameTextField.text = StringUtils.defaultIfBlank(nameTextField.text, file.name)
                 fileTextField.text = file.absolutePath
+
                 if (keyType == KeyPairProvider.SSH_RSA) {
                     typeComboBox.addItem("RSA")
-                } else {
+                } else if (keyType == KeyPairProvider.SSH_ED25519) {
                     typeComboBox.addItem("ED25519")
+                }else if (keyType == KeyPairProvider.ECDSA_SHA2_NISTP256) {
+                    typeComboBox.addItem("ECDSA-SHA2-NISTP256")
+                }else if (keyType == KeyPairProvider.ECDSA_SHA2_NISTP384) {
+                    typeComboBox.addItem("ECDSA-SHA2-NISTP384")
+                }else {
+                    typeComboBox.addItem("ECDSA-SHA2-NISTP521")
                 }
+
                 lengthComboBox.addItem(KeyUtils.getKeySize(keyPair.private))
 
                 ohKeyPair = OhKeyPair(

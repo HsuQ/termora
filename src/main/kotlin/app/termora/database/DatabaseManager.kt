@@ -409,7 +409,8 @@ class DatabaseManager private constructor() : Disposable {
             val accountOwner = AccountOwner(
                 id = account.id,
                 name = account.email,
-                type = OwnerType.User
+                type = OwnerType.User,
+                role = StringUtils.EMPTY,
             )
 
             for (host in hostManager.hosts()) {
@@ -760,6 +761,11 @@ class DatabaseManager private constructor() : Disposable {
          * 透明度
          */
         var opacity by DoublePropertyDelegate(1.0)
+
+        /**
+         * UI 缩放，空表示跟随系统默认
+         */
+        var uiScale by StringPropertyDelegate(StringUtils.EMPTY)
     }
 
     /**

@@ -3,6 +3,7 @@ package app.termora.tree
 import app.termora.*
 import app.termora.Application.ohMyJson
 import app.termora.account.AccountManager
+import app.termora.account.TeamRole
 import app.termora.actions.AnAction
 import app.termora.actions.AnActionEvent
 import app.termora.actions.OpenHostAction
@@ -17,6 +18,7 @@ import app.termora.tag.TagManager
 import app.termora.tag.TagSimpleTreeCellRendererExtension
 import app.termora.transfer.TransferActionEvent
 import com.formdev.flatlaf.extras.components.FlatPopupMenu
+import com.formdev.flatlaf.util.SystemInfo
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import org.apache.commons.csv.CSVFormat
@@ -40,6 +42,8 @@ import java.awt.datatransfer.Transferable
 import java.awt.datatransfer.UnsupportedFlavorException
 import java.awt.event.*
 import java.io.*
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
 import java.util.*
 import javax.swing.*
 import javax.swing.event.PopupMenuEvent
@@ -65,6 +69,66 @@ class NewHostTree : SimpleTree(), Disposable {
             ShowMoreInfoSimpleTreeCellRendererExtension.getInstance()
             // 标签
             TagSimpleTreeCellRendererExtension.getInstance()
+        }
+
+        private fun isUtf8(file: File): Boolean {
+            val bytes = file.readBytes()
+
+            // check UTF-8 BOM (EF BB BF)
+            if (bytes.size >= 3 &&
+                bytes[0] == 0xEF.toByte() &&
+                bytes[1] == 0xBB.toByte() &&
+                bytes[2] == 0xBF.toByte()
+            ) {
+                return true
+            }
+
+            return try {
+                StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(bytes))
+                true
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+        /**
+         * using Windows API convert ANSI -> UTF-16 -> String
+         */
+        private fun ansiToUtf8(bytes: ByteArray): String {
+            val kernel32 = MyKernel32.INSTANCE
+
+            val wideCharCount = kernel32.MultiByteToWideChar(
+                MyKernel32.CP_ACP,
+                0,  // MB_PRECOMPOSED
+                bytes,
+                bytes.size,
+                null,
+                0
+            )
+            if (wideCharCount == 0) {
+                throw RuntimeException("MultiByteToWideChar failed to calculate buffer size")
+            }
+
+            // ANSI -> UTF-16
+            val wideChars = CharArray(wideCharCount)
+            val result = kernel32.MultiByteToWideChar(
+                MyKernel32.CP_ACP,
+                0,
+                bytes,
+                bytes.size,
+                wideChars,
+                wideCharCount
+            )
+
+            if (result == 0) {
+                throw RuntimeException("MultiByteToWideChar conversion failed")
+            }
+
+            // UTF-16 to Java String
+            return String(wideChars)
         }
     }
 
@@ -155,9 +219,9 @@ class NewHostTree : SimpleTree(), Disposable {
                 val path: TreePath? = getPathForLocation(e.x, e.y)
                 if (path != null) {
                     val node: HostTreeNode = path.lastPathComponent as HostTreeNode
-                    if (node.host.remark.isNotEmpty()){
+                    if (node.host.remark.isNotEmpty()) {
                         toolTipText = node.host.remark
-                    }else{
+                    } else {
                         toolTipText = null
                     }
                 } else {
@@ -181,7 +245,7 @@ class NewHostTree : SimpleTree(), Disposable {
             override fun actionPerformed(evt: AnActionEvent) {
                 val lastNode = getLastSelectedPathNode() ?: return
                 val folder = if (lastNode.isFolder) lastNode.parent ?: simpleTreeModel.root
-                    else lastNode.parent ?: return
+                else lastNode.parent ?: return
 
                 if (toolkit.systemClipboard.isDataFlavorAvailable(NodesTransferable.FLAVOR).not()) return
                 val nodes = (toolkit.systemClipboard.getData(NodesTransferable.FLAVOR) as? List<*>)
@@ -451,6 +515,33 @@ class NewHostTree : SimpleTree(), Disposable {
             }
 
             override fun popupMenuCanceled(e: PopupMenuEvent?) {
+            }
+
+        })
+
+        popupMenu.addPopupMenuListener(object : PopupMenuListener {
+
+            override fun popupMenuWillBecomeVisible(e: PopupMenuEvent?) {
+                for (node in nodes) {
+                    val team = TeamTreeNode.parentTeam(node) ?: continue
+                    if (team.role == TeamRole.Visitor.name) {
+                        copy.isEnabled = false
+                        remove.isEnabled = false
+                        rename.isEnabled = false
+                        importMenu.isEnabled = false
+                        newMenu.isEnabled = false
+                        tagsMenu.isEnabled = false
+                        break
+                    }
+                }
+            }
+
+            override fun popupMenuWillBecomeInvisible(e: PopupMenuEvent?) {
+
+            }
+
+            override fun popupMenuCanceled(e: PopupMenuEvent?) {
+
             }
 
         })
@@ -877,7 +968,23 @@ class NewHostTree : SimpleTree(), Disposable {
     private fun parseFromMobaXterm(folder: HostTreeNode, file: File): List<HostTreeNode> {
         val ini = Ini()
         ini.config.isEscapeKeyOnly = true
-        ini.load(file)
+
+        if (isUtf8(file)) {
+            ini.load(file)
+        } else {
+            if (!SystemInfo.isWindows) {
+                OptionPane.showMessageDialog(
+                    owner,
+                    "Non-UTF-8 encoded MobaXterm config files are only supported on Windows. Please convert the file to UTF-8 encoding first."
+                )
+                return emptyList()
+            }
+            val bytes = file.readBytes()
+            val utf8String = ansiToUtf8(bytes)
+            StringReader(utf8String).use { reader ->
+                ini.load(reader)
+            }
+        }
 
         val bookmarks = mutableListOf<String>()
         for (key in ini.keys) {

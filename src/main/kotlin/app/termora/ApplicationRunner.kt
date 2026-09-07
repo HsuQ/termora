@@ -10,15 +10,12 @@ import com.formdev.flatlaf.extras.FlatInspector
 import com.formdev.flatlaf.ui.FlatTableCellBorder
 import com.formdev.flatlaf.util.SystemInfo
 import com.jthemedetecor.OsThemeDetector
-import com.mixpanel.mixpanelapi.ClientDelivery
-import com.mixpanel.mixpanelapi.MessageBuilder
-import com.mixpanel.mixpanelapi.MixpanelAPI
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.apache.commons.io.FileUtils
 import org.apache.commons.lang3.LocaleUtils
 import org.apache.commons.lang3.SystemUtils
-import org.json.JSONObject
+import org.apache.commons.lang3.math.NumberUtils
 import org.slf4j.LoggerFactory
 import java.awt.*
 import java.awt.desktop.AppReopenedEvent
@@ -204,6 +201,16 @@ class ApplicationRunner {
             log.info("Language: {} , Locale: {}", language, locale)
         }
         Locale.setDefault(locale)
+
+        // UI 缩放，仅在未被 JVM 参数或 TERMORA_SCALE 环境变量覆盖时生效
+        val uiScale = DatabaseManager.getInstance().appearance.uiScale
+        if (System.getProperty(FlatSystemProperties.UI_SCALE).isNullOrBlank()
+            && NumberUtils.toDouble(uiScale, -1.0) > 0
+        ) {
+            System.setProperty(FlatSystemProperties.UI_SCALE_ENABLED, "true")
+            System.setProperty(FlatSystemProperties.UI_SCALE, uiScale)
+            System.setProperty(Application.UI_SCALE_FROM_SETTINGS, "true")
+        }
     }
 
 
@@ -369,61 +376,8 @@ class ApplicationRunner {
         if (Application.isUnknownVersion()) {
             return
         }
-
-        swingCoroutineScope.launch(Dispatchers.IO) {
-            try {
-                val properties = JSONObject()
-                properties.put("os", SystemUtils.OS_NAME)
-                if (SystemInfo.isLinux) {
-                    properties.put("platform", "Linux")
-                } else if (SystemInfo.isWindows) {
-                    properties.put("platform", "Windows")
-                } else if (SystemInfo.isMacOS) {
-                    properties.put("platform", "macOS")
-                }
-                properties.put("version", Application.getVersion())
-                properties.put("language", Locale.getDefault().toString())
-                val message = MessageBuilder("0871335f59ee6d0eb246b008a20f9d1c")
-                    .event(getAnalyticsUserID(), "launch", properties)
-                val delivery = ClientDelivery()
-                delivery.addMessage(message)
-                val endpoints = listOf(
-                    "https://api-eu.mixpanel.com",
-                    "https://api-in.mixpanel.com",
-                    "https://api.mixpanel.com",
-                    "http://api.mixpanel.com",
-                )
-                for (endpoint in endpoints) {
-                    try {
-                        MixpanelAPI(
-                            "$endpoint/track",
-                            "$endpoint/engage",
-                            "$endpoint/groups"
-                        ).deliver(delivery, true)
-                        break
-                    } catch (e: Exception) {
-                        if (log.isErrorEnabled) {
-                            log.error(e.message, e)
-                        }
-                        continue
-                    }
-                }
-            } catch (e: Exception) {
-                if (log.isErrorEnabled) {
-                    log.error(e.message, e)
-                }
-            }
-        }
+        MixpanelService.getInstance().push("launch")
     }
 
-    private fun getAnalyticsUserID(): String {
-        val properties = DatabaseManager.getInstance().properties
-        var id = properties.getString("AnalyticsUserID")
-        if (id.isNullOrBlank()) {
-            id = randomUUID()
-            properties.putString("AnalyticsUserID", id)
-        }
-        return id
-    }
 
 }
